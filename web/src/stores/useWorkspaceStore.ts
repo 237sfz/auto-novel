@@ -126,6 +126,9 @@ const createGptWorkspaceStore = () =>
           it.endpoint = 'https://api.openai.com';
         }
       }
+      if (it.enableThinking === undefined) {
+        it.enableThinking = false;
+      }
       if (it.type === 'web') {
         it.model = 'text-davinci-002-render-sha';
       } else {

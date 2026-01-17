@@ -10,18 +10,37 @@ import { createLengthSegmentor } from './Common';
 type OpenAi = ReturnType<typeof createOpenAiApi>;
 type OpenAiWeb = ReturnType<typeof createOpenAiWebApi>;
 
+type TokenUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
+};
+
+type TranslateLinesResult =
+  | { type: 'censored'; detail: string[] }
+  | { type: 'error'; message: string; delaySeconds?: number; detail: string[] }
+  | {
+      type: 'answer';
+      answer: string[];
+      fromHistory: boolean;
+      detail: string[];
+    };
+
 export class OpenAiTranslator implements SegmentTranslator {
   id = <const>'gpt';
   log: Logger;
   private api: OpenAi | OpenAiWeb;
   private model: string;
+  private enableThinking: boolean;
 
   constructor(
     log: Logger,
-    { type, model, endpoint, key }: OpenAiTranslator.Config,
+    { type, model, endpoint, key, enableThinking }: OpenAiTranslator.Config,
   ) {
     this.log = log;
     this.model = model;
+    this.enableThinking = type === 'api' && enableThinking === true;
     if (type === 'web') {
       this.api = createOpenAiWebApi(endpoint, key);
     } else {
@@ -37,16 +56,36 @@ export class OpenAiTranslator implements SegmentTranslator {
   ): Promise<string[]> {
     let enableBypass = false;
 
+    const buildFallbackDetail = (
+      lines: string[],
+      result: TranslateLinesResult,
+    ) => {
+      const detail = [`原文:\n${lines.join('\n')}`];
+      if (result.type === 'answer') {
+        detail.push(`返回原文:\n${result.answer.join('\n')}`);
+        if (result.fromHistory) {
+          detail.push('来源：历史恢复');
+        }
+      } else if (result.type === 'censored') {
+        detail.push('返回：censored');
+      } else {
+        detail.push(`错误:\n${result.message}`);
+      }
+      return detail;
+    };
+
     const logSegInfo = ({
       retry,
       binaryRange,
       lineNumber,
       suffix,
+      detail,
     }: {
       retry?: number;
       binaryRange?: [number, number];
       lineNumber?: [number, number];
       suffix?: string;
+      detail?: string[];
     }) => {
       const parts: string[] = [];
       if (retry !== undefined) {
@@ -67,7 +106,7 @@ export class OpenAiTranslator implements SegmentTranslator {
       if (suffix !== undefined) {
         parts.push(suffix);
       }
-      this.log(parts.join('　'));
+      this.log(parts.join('　'), detail);
     };
 
     let retry = 0;
@@ -80,16 +119,21 @@ export class OpenAiTranslator implements SegmentTranslator {
         signal,
       );
 
-      if (result === 'censored') {
+      if (result.type === 'censored') {
+        const detail =
+          result.detail ?? buildFallbackDetail(seg, result);
         logSegInfo({
           retry,
           lineNumber: [seg.length, NaN],
           suffix: enableBypass
             ? '违规，而且恢复失败'
             : '违规，而且恢复失败，启用咒语来尝试绕过审查',
+          detail,
         });
         enableBypass = true;
-      } else if ('answer' in result) {
+      } else if (result.type === 'answer') {
+        const detail =
+          result.detail ?? buildFallbackDetail(seg, result);
         const isChinese = detectChinese(result.answer.join(' '));
 
         if (result.fromHistory) {
@@ -97,9 +141,14 @@ export class OpenAiTranslator implements SegmentTranslator {
             retry,
             lineNumber: [seg.length, result.answer.length],
             suffix: '违规，但是成功恢复',
+            detail,
           });
         } else {
-          logSegInfo({ retry, lineNumber: [seg.length, result.answer.length] });
+          logSegInfo({
+            retry,
+            lineNumber: [seg.length, result.answer.length],
+            detail,
+          });
         }
 
         if (seg.length !== result.answer.length) {
@@ -111,7 +160,13 @@ export class OpenAiTranslator implements SegmentTranslator {
           return result.answer;
         }
       } else {
-        logSegInfo({ retry, lineNumber: [seg.length, NaN] });
+        const detail =
+          result.detail ?? buildFallbackDetail(seg, result);
+        logSegInfo({
+          retry,
+          lineNumber: [seg.length, NaN],
+          detail,
+        });
         await this.onError(result, signal);
       }
 
@@ -137,27 +192,37 @@ export class OpenAiTranslator implements SegmentTranslator {
         signal,
       );
 
-      if (typeof result === 'object') {
-        if ('answer' in result) {
-          const isChinese = detectChinese(result.answer.join(' '));
-          logSegInfo({
-            binaryRange: [left, right],
-            lineNumber: [right - left, result.answer.length],
-          });
-          if (right - left === result.answer.length && isChinese) {
-            return result.answer;
-          }
-        } else {
-          logSegInfo({
-            binaryRange: [left, right],
-            lineNumber: [right - left, NaN],
-          });
-          await this.onError(result);
+      if (result.type === 'answer') {
+        const detail =
+          result.detail ??
+          buildFallbackDetail(seg.slice(left, right), result);
+        const isChinese = detectChinese(result.answer.join(' '));
+        logSegInfo({
+          binaryRange: [left, right],
+          lineNumber: [right - left, result.answer.length],
+          detail,
+        });
+        if (right - left === result.answer.length && isChinese) {
+          return result.answer;
         }
-      } else {
+      } else if (result.type === 'error') {
+        const detail =
+          result.detail ??
+          buildFallbackDetail(seg.slice(left, right), result);
         logSegInfo({
           binaryRange: [left, right],
           lineNumber: [right - left, NaN],
+          detail,
+        });
+        await this.onError(result);
+      } else {
+        const detail =
+          result.detail ??
+          buildFallbackDetail(seg.slice(left, right), result);
+        logSegInfo({
+          binaryRange: [left, right],
+          lineNumber: [right - left, NaN],
+          detail,
         });
       }
 
@@ -186,11 +251,7 @@ export class OpenAiTranslator implements SegmentTranslator {
     glossary: Glossary,
     enableBypass: boolean,
     signal?: AbortSignal,
-  ): Promise<
-    | 'censored'
-    | { message: string; delaySeconds?: number }
-    | { answer: string[]; fromHistory: boolean }
-  > {
+  ): Promise<TranslateLinesResult> {
     const parseAnswer = (answer: string) => {
       return answer
         .split('\n')
@@ -203,13 +264,73 @@ export class OpenAiTranslator implements SegmentTranslator {
         );
     };
 
+    const formatUsage = (usage: TokenUsage) => {
+      const promptTokens = usage.promptTokens ?? '-';
+      const completionTokens = usage.completionTokens ?? '-';
+      const thinkingTokens = usage.thinkingTokens ?? '-';
+      const totalTokens =
+        usage.totalTokens === undefined ? '' : `, total ${usage.totalTokens}`;
+      return `Token: input ${promptTokens}, output ${completionTokens}, thinking ${thinkingTokens}${totalTokens}`;
+    };
+
+    const buildDetail = ({
+      rawAnswer,
+      error,
+      fromHistory,
+      censored,
+      thinking,
+      usage,
+    }: {
+      rawAnswer?: string;
+      error?: string;
+      fromHistory?: boolean;
+      censored?: boolean;
+      thinking?: string;
+      usage?: TokenUsage;
+    }) => {
+      const detail = [`原文:\n${lines.join('\n')}`];
+      if (rawAnswer !== undefined) {
+        detail.push(`返回原文:\n${rawAnswer}`);
+      }
+      if (thinking !== undefined && thinking.trim() !== '') {
+        detail.push(`思考内容:\n${thinking}`);
+      }
+      if (usage !== undefined) {
+        detail.push(formatUsage(usage));
+      }
+      if (fromHistory) {
+        detail.push('来源：历史恢复');
+      }
+      if (censored) {
+        detail.push('返回：censored');
+      }
+      if (error !== undefined) {
+        detail.push(`错误:\n${error}`);
+      }
+      return detail;
+    };
+
     const messages = buildMessages(lines, glossary, enableBypass);
     if ('createChatCompletionsStream' in this.api) {
-      return askApi(this.api, this.model, messages, signal)
-        .then((it) => ({
-          answer: parseAnswer(it.answer),
-          fromHistory: false,
-        }))
+      return askApi(
+        this.api,
+        this.model,
+        messages,
+        signal,
+        this.enableThinking,
+      )
+        .then(
+          (it): TranslateLinesResult => ({
+            type: 'answer',
+            answer: parseAnswer(it.answer),
+            fromHistory: false,
+            detail: buildDetail({
+              rawAnswer: it.answer,
+              thinking: it.thinking,
+              usage: it.usage,
+            }),
+          }),
+        )
         .catch((e: unknown) => {
           if (e instanceof OpenAiError) {
             const errors: [string, string, number][] = [
@@ -217,10 +338,19 @@ export class OpenAiTranslator implements SegmentTranslator {
             ];
             for (const [code, message, delaySeconds] of errors) {
               if (e.code === code) {
-                return { message, delaySeconds };
+                return <TranslateLinesResult>{
+                  type: 'error',
+                  message,
+                  delaySeconds,
+                  detail: buildDetail({ error: e.message }),
+                };
               }
             }
-            return { message: e.message };
+            return <TranslateLinesResult>{
+              type: 'error',
+              message: e.message,
+              detail: buildDetail({ error: e.message }),
+            };
           } else {
             throw e;
           }
@@ -258,13 +388,28 @@ export class OpenAiTranslator implements SegmentTranslator {
       const result = await askApiWeb(this.api, this.model, messages, signal);
       if (typeof result === 'object') {
         return {
+          type: 'answer',
           answer: parseAnswer(result.answer),
           fromHistory: result.fromHistory,
+          detail: buildDetail({
+            rawAnswer: result.answer,
+            fromHistory: result.fromHistory,
+          }),
         };
-      } else if (result === 'censored') {
-        return result;
       } else {
-        return parseError(result);
+        if (result === 'censored') {
+          return {
+            type: 'censored',
+            detail: buildDetail({ censored: true }),
+          };
+        }
+        const parsedError = parseError(result);
+        return {
+          type: 'error',
+          message: parsedError.message,
+          delaySeconds: parsedError.delaySeconds,
+          detail: buildDetail({ error: result }),
+        };
       }
     }
   }
@@ -302,33 +447,102 @@ export namespace OpenAiTranslator {
     model: string;
     endpoint: string;
     key: string;
+    enableThinking?: boolean;
   }
   export const create = (log: Logger, config: Config) =>
     new OpenAiTranslator(log, config);
 }
+
+const normalizeUsage = (usage: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  completion_tokens_details?: {
+    reasoning_tokens?: number;
+    thinking_tokens?: number;
+  };
+  output_tokens_details?: {
+    reasoning_tokens?: number;
+    thinking_tokens?: number;
+  };
+  reasoning_tokens?: number;
+  thinking_tokens?: number;
+}): TokenUsage => {
+  const promptTokens = usage.prompt_tokens ?? usage.input_tokens;
+  const completionTokens = usage.completion_tokens ?? usage.output_tokens;
+  const totalTokens =
+    usage.total_tokens ??
+    (promptTokens !== undefined && completionTokens !== undefined
+      ? promptTokens + completionTokens
+      : undefined);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    thinkingTokens:
+      usage.completion_tokens_details?.reasoning_tokens ??
+      usage.completion_tokens_details?.thinking_tokens ??
+      usage.output_tokens_details?.reasoning_tokens ??
+      usage.output_tokens_details?.thinking_tokens ??
+      usage.reasoning_tokens ??
+      usage.thinking_tokens,
+  };
+};
 
 const askApi = (
   api: OpenAi,
   model: string,
   messages: ['user' | 'assistant', string][],
   signal?: AbortSignal,
-): Promise<{ answer: string }> =>
-  api
-    .createChatCompletionsStream(
-      {
-        messages: messages.map(([role, content]) => ({ content, role })),
-        model,
-        stream: true,
-      },
-      { signal },
-    )
+  enableThinking?: boolean,
+): Promise<{ answer: string; thinking?: string; usage?: TokenUsage }> => {
+  const payload = {
+    messages: messages.map(([role, content]) => ({ content, role })),
+    model,
+    stream: true as const,
+  };
+  const payloadWithThinking = enableThinking
+    ? {
+        ...payload,
+        enable_thinking: true as const,
+        stream_options: { include_usage: true },
+      }
+    : payload;
+  return api
+    .createChatCompletionsStream(payloadWithThinking, { signal })
     .then((completionStream) => {
-      const answer = Array.from(completionStream)
+      const chunks = Array.from(completionStream);
+      const answer = chunks
         .map((chunk) => chunk.choices[0]?.delta.content)
         .filter((content) => typeof content === 'string')
         .join('');
-      return { answer };
+      const thinking = chunks
+        .map((chunk) => {
+          const delta = chunk.choices[0]?.delta;
+          return (
+            delta?.reasoning_content ??
+            delta?.thinking ??
+            delta?.reasoning ??
+            null
+          );
+        })
+        .filter((content) => typeof content === 'string')
+        .join('');
+      let usage: TokenUsage | undefined;
+      for (const chunk of chunks) {
+        if (chunk.usage !== undefined) {
+          usage = normalizeUsage(chunk.usage);
+        }
+      }
+      return {
+        answer,
+        thinking: thinking.trim() === '' ? undefined : thinking,
+        usage,
+      };
     });
+};
 
 const askApiWeb = async (
   api: OpenAiWeb,

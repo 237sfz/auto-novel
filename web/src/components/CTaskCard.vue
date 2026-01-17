@@ -16,14 +16,16 @@ watch(
   },
 );
 
-type LogLine = { message: string; detail?: string[] };
+type LogLine = { id: number; message: string; detail?: string[] };
 const logs = ref<LogLine[]>([]);
+let nextLogId = 0;
 
 const clearLog = () => {
   logs.value = [];
+  nextLogId = 0;
 };
-const pushLog = (line: LogLine) => {
-  logs.value.push(line);
+const pushLog = (line: { message: string; detail?: string[] }) => {
+  logs.value.push({ id: nextLogId++, ...line });
 };
 
 const logRef = ref<ScrollbarInst>();
@@ -87,7 +89,7 @@ defineExpose({
         style="flex: auto; white-space: pre-wrap"
         :style="{ height: expandLog ? '540px' : '180px' }"
       >
-        <div v-for="log of logs" :key="log.message">
+        <div v-for="log of logs" :key="log.id">
           {{ log.message }}
           <span v-if="log.detail" @click="showDetail(log.message, log.detail!)">
             [详细]

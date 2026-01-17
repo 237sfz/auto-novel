@@ -46,6 +46,7 @@ const translatorConfig = computed(() => {
       model: worker.model,
       endpoint: worker.endpoint,
       key: worker.key,
+      enableThinking: worker.enableThinking,
     };
   } else {
     return <TranslatorConfig & { id: 'sakura' }>{

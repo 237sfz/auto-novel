@@ -8,6 +8,7 @@ export interface GptWorker {
   type: 'web' | 'api';
   model: string;
   key: string;
+  enableThinking?: boolean;
 }
 
 export interface SakuraWorker {

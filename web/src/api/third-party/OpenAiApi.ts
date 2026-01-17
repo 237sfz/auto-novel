@@ -66,6 +66,9 @@ interface ChatCompletionChunk {
   choices: Array<{
     delta: {
       content?: string | null;
+      reasoning_content?: string | null;
+      thinking?: string | null;
+      reasoning?: string | null;
     };
     finish_reason:
       | 'stop'
@@ -75,6 +78,7 @@ interface ChatCompletionChunk {
       | null;
     index: number;
   }>;
+  usage?: ChatCompletion['usage'];
 }
 
 interface ChatCompletion {
@@ -93,12 +97,27 @@ interface ChatCompletion {
     message: {
       content: string | null;
       role: 'system' | 'user' | 'assistant' | 'function';
+      reasoning_content?: string | null;
+      thinking?: string | null;
+      reasoning?: string | null;
     };
   }>;
   usage: {
     completion_tokens: number;
     prompt_tokens: number;
     total_tokens: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    reasoning_tokens?: number;
+    thinking_tokens?: number;
+    completion_tokens_details?: {
+      reasoning_tokens?: number;
+      thinking_tokens?: number;
+    };
+    output_tokens_details?: {
+      reasoning_tokens?: number;
+      thinking_tokens?: number;
+    };
   };
   // llamacpp特有
   completion_probabilities?: Array<{
@@ -233,6 +252,12 @@ namespace ChatCompletion {
      * [Example Python code](https://github.com/openai/openai-cookbook/blob/main/examples/How_to_stream_completions.ipynb).
      */
     stream?: boolean | null;
+
+    stream_options?: {
+      include_usage?: boolean;
+    };
+
+    enable_thinking?: boolean;
 
     /**
      * What sampling temperature to use, between 0 and 2. Higher values like 0.8 will

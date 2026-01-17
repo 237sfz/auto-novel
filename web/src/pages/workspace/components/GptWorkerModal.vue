@@ -20,6 +20,7 @@ const initFormValue = (): {
   model: string;
   endpoint: string;
   key: string;
+  enableThinking: boolean;
 } => {
   const worker = props.worker;
   if (worker === undefined) {
@@ -28,6 +29,7 @@ const initFormValue = (): {
       model: 'deepseek-chat',
       endpoint: 'https://api.deepseek.com',
       key: '',
+      enableThinking: false,
     };
   } else {
     return {
@@ -35,6 +37,7 @@ const initFormValue = (): {
       model: worker.model,
       endpoint: worker.endpoint,
       key: worker.key,
+      enableThinking: worker.enableThinking ?? false,
     };
   }
 };
@@ -106,6 +109,7 @@ const submit = async () => {
     model: model.trim(),
     endpoint: endpoint.trim(),
     key: key.trim(),
+    enableThinking: formValue.value.enableThinking,
   };
 
   if (props.worker === undefined) {
@@ -164,6 +168,10 @@ const verb = computed(() => (props.worker === undefined ? '添加' : '更新'));
           placeholder="请输入Api key"
           :input-props="{ spellcheck: false }"
         />
+      </n-form-item-row>
+
+      <n-form-item-row label="启用 thinking">
+        <n-switch v-model:value="formValue.enableThinking" size="small" />
       </n-form-item-row>
 
       <n-text depth="3" style="font-size: 12px">

@@ -61,6 +61,7 @@ const translate = async () => {
       model: worker.model,
       endpoint: worker.endpoint,
       key: worker.key,
+      enableThinking: worker.enableThinking,
     };
   } else if (id === 'sakura') {
     const worker = sakuraWorkspaceRef.value.workers.find(
